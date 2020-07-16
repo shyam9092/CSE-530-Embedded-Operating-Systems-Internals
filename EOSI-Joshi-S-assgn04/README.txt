@@ -67,3 +67,5 @@ $ARCH=x86 LOCALVERSION= CROSS_COMPILE=i586-poky-linux- make -j4
 Go to kernel/arch/x86/boot and copy bzImage to /media/realroot of sdcard
 
 $reboot
+
+NOTE: You can download the linux for intel galileo gen 2 from the following link: https://drive.google.com/drive/folders/1BUiFQ_OLtI_Kquvt7m962oUCf-uUr2VX?usp=sharing
