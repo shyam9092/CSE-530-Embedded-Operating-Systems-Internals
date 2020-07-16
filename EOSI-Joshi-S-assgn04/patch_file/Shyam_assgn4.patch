@@ -1,0 +1,443 @@
+diff -uNr kernel.old/arch/x86/syscalls/syscall_32.tbl kernel.new/arch/x86/syscalls/syscall_32.tbl
+--- kernel.old/arch/x86/syscalls/syscall_32.tbl	2017-06-17 10:44:31.000000000 -0700
++++ kernel.new/arch/x86/syscalls/syscall_32.tbl	2020-05-01 20:38:26.669082000 -0700
+@@ -365,3 +365,5 @@
+ 356	i386	memfd_create		sys_memfd_create
+ 357	i386	bpf			sys_bpf
+ 358	i386	execveat		sys_execveat			stub32_execveat
++359	i386	insdump	sys_insdump
++360	i386	rmdump	sys_rmdump
+diff -uNr kernel.old/include/linux/dynamic_dump_stack.h kernel.new/include/linux/dynamic_dump_stack.h
+--- kernel.old/include/linux/dynamic_dump_stack.h	1969-12-31 17:00:00.000000000 -0700
++++ kernel.new/include/linux/dynamic_dump_stack.h	2020-05-01 21:16:38.489722000 -0700
+@@ -0,0 +1 @@
++extern void remove_probes(int);
+diff -uNr kernel.old/kernel/exit.c kernel.new/kernel/exit.c
+--- kernel.old/kernel/exit.c	2017-06-17 10:44:58.000000000 -0700
++++ kernel.new/kernel/exit.c	2020-05-01 23:35:38.562742000 -0700
+@@ -58,6 +58,7 @@
+ #include <asm/unistd.h>
+ #include <asm/pgtable.h>
+ #include <asm/mmu_context.h>
++#include <linux/dynamic_dump_stack.h>
+ 
+ static void exit_mm(struct task_struct *tsk);
+ 
+@@ -653,6 +654,7 @@
+ {
+ 	struct task_struct *tsk = current;
+ 	int group_dead;
++	remove_probes(tsk->pid); //custom func
+ 	TASKS_RCU(int tasks_rcu_i);
+ 
+ 	profile_task_exit(tsk);
+diff -uNr kernel.old/lib/dynamic_dump_stack.c kernel.new/lib/dynamic_dump_stack.c
+--- kernel.old/lib/dynamic_dump_stack.c	1969-12-31 17:00:00.000000000 -0700
++++ kernel.new/lib/dynamic_dump_stack.c	2020-05-01 23:35:28.550256000 -0700
+@@ -0,0 +1,379 @@
++#include <linux/version.h>
++#include <linux/cdev.h>
++#include <linux/kprobes.h>
++#include <linux/kernel.h>
++#include <linux/fs.h>
++#include <linux/types.h>
++#include <linux/slab.h>
++#include <asm/uaccess.h>
++#include <linux/string.h>
++#include <linux/device.h>
++#include <linux/jiffies.h>
++#include <linux/mutex.h>
++#include <linux/init.h>
++#include <linux/list.h>
++#include <linux/moduleparam.h>
++#include <linux/sched.h>
++#include <linux/syscalls.h>
++#include <linux/module.h>
++#include <linux/semaphore.h>
++
++typedef int dumpmode_t;
++static int flag = 0;
++static struct semaphore sem;
++
++struct node_list                    //link list structure 
++{   
++    int dump_mode;                  //to get dump_mode from user
++    pid_t process_id;                 //for probe handler purposes storing the pid of the process that calls insdump
++    pid_t parent_id;
++    struct kprobe *probe;           //to register the kprobe
++    unsigned int dumpid;            //giving back the user the dumpid for future usage of rmdump
++    struct node_list *next;         //link list next node pointer
++}*head;
++
++int probe_handler_pre(struct kprobe *p, struct pt_regs *regs)  //probe pre handler function for dump_stack() operation
++{
++    struct kprobe *ptr = (struct kprobe *)(p);              //get the kprobe pointer that hits the registered address
++    struct node_list *traverse = head;                      //traversing link list from beginning
++    struct task_struct *task_ptr = current;                 //to check the pid of the process that calls the function at which the kprobe is registered at
++ 
++    if(head->probe == ptr)                                  //check if the kprobe ptr that hit the address is same as the one in head's node
++    {
++        printk("head found \n");
++        if(head->dump_mode == 0)                            //check if dump mode is equal to 0
++        {
++            printk("dump_mode = 0 \n");
++            if(head->process_id == task_ptr->pid)              //dump mode is 0 then we need to see if the owner process only has called the function at which he has registered the kprobe by calling insdump sys call
++            {
++                dump_stack();                                  //do dump_stack operation
++                printk("process id matched \n");                
++                printk("dump_mode = %d \t dumpid = %u \n",head->dump_mode,head->dumpid);
++                return 0;
++            }
++            else                                              //some other process has hit the function at which this probe is registered which is not same as the owner
++            {
++                printk("wrong pid \n");
++                return 0;
++            }
++        }
++        else if(head->dump_mode == 1)                           //check for dump_mode is equal to 1 or not
++        {
++            if(head->parent_id == task_ptr->parent->pid)
++            {
++                dump_stack();
++            }    
++            printk("dump_mode = %d \t dumpid = %u \n",head->dump_mode,head->dumpid);    
++            return 0;
++        }
++        else                                                //else condition is for when dump_mode is greater than 1 then we have to do dump_stack irrespective of the calling process
++        {
++            printk("dump_mode = %d \t dumpid = %u \n",head->dump_mode,head->dumpid);
++            dump_stack();
++            return 0;
++        }
++        
++    }   
++    else                    //check if the kprobe pointer is there in the link list nodes
++    {
++        while(traverse->probe != ptr)           //keep iterating till the probe ptr is found in the nodes
++        {
++            traverse = traverse->next;          
++            if(traverse == NULL)        //if we have reached the end of list then return 0
++            {
++                return 0;
++            }
++        }
++        printk("node found \n");
++        if(traverse->dump_mode == 0)        //check for the same conditions as int the case of head 
++        {
++            if(traverse->process_id == task_ptr->pid)
++            {
++                printk("process id matched \n");
++                printk("dump_mode = %d \t dumpid = %u \n",traverse->dump_mode,traverse->dumpid);
++                dump_stack();
++                return 0;
++            }
++            else
++            {
++                printk("wrong pid \n");
++                return 0;
++            }
++        }
++        else if(traverse->dump_mode == 1)
++        {
++            if(traverse->parent_id == task_ptr->parent->pid)
++            {
++                dump_stack();
++            }
++            printk("mode = 1 \n");
++            return 0;
++        }  
++        else
++        {   
++            dump_stack();
++            printk("dump_mode = %d \t dumpid = %u \n",traverse->dump_mode,traverse->dumpid);
++            return 0;
++        }
++    }
++    
++    return -EINVAL;
++}
++
++void probe_handler_post(struct kprobe *p, struct pt_regs *regs,unsigned long flags) //post handler function of kprobe 
++{
++    printk("entered post handler \n");
++}
++
++int probe_handler_fault(struct kprobe *p, struct pt_regs *regs,int trapnr) //fault handler function of kprobe
++{
++    printk("entered fault handler \n");
++    return 0;
++}
++
++
++SYSCALL_DEFINE2(insdump, const char __user *, symbolname, dumpmode_t, mode) //system call insdump
++{
++
++    #ifndef CONFIG_DYNAMIC_DUMP_STACK
++        return -EINVAL;
++    #endif
++
++    int ret;                                                                //for return value of register_kprobe
++    int dumpmode = mode;                                                    //get dump_mode from user
++    char *addr = kmalloc(sizeof(char)*32,GFP_KERNEL);
++    unsigned int value = 0;                                                 //for dumpid 
++    struct node_list *temp = (struct node_list *)kmalloc(sizeof(struct node_list),GFP_KERNEL); //to get the symbol name from the user
++    struct node_list *traverse = head;                                       //to traverse the link list from start   
++    struct task_struct *task_ptr = current;                                  //to store the pid of the process that called insdump  
++    printk("===> Entered insdump sys call \n");
++    strncpy_from_user(addr,symbolname,sizeof(char)*32);                      //copy the symbol name
++    printk("string is %s \n",addr);
++    printk("dump mode = %d \n",dumpmode);
++    if(traverse == NULL)                                                        //check if head of the link list is populated or not
++    {
++        down(&sem);                                                //ACQUIRE LOCK
++        head = temp;                                                            //point the head to a memory location and then populate it's members
++        head->dump_mode = mode;                                                 //register dump_mode                    
++        printk("Head is empty \n");
++        if(mode == 0 || mode == 1)
++        {
++            if(task_ptr->parent != NULL)
++            {
++                head->parent_id = task_ptr->parent->pid;
++            }
++            printk("mode = 0/1 \n");            
++        }       
++        printk("dump_mode [head] = %u \n",head->dump_mode);
++        head->process_id = task_ptr->pid;                                         //register the process id of the process that used sys call insdump
++        head->probe = kzalloc(sizeof(struct kprobe), GFP_KERNEL);               //create memory for kprobe 
++        head->probe->pre_handler = probe_handler_pre;                           //assign pre_handler function
++        head->probe->post_handler = probe_handler_post;                         //assign post_handler function            
++        head->probe->fault_handler = probe_handler_fault;                       //assign fault_handler function
++        //head->probe->symbol_name = addr;
++        head->probe->addr = (kprobe_opcode_t *)kallsyms_lookup_name(addr);      //check if the symbol name provided by the user actually exists or not
++        ret = register_kprobe(head->probe);                                     //register the kprobe and store the return value for error detection
++        if(ret)                                                                 //if return value of the kprobe registration is not equal to zero than there's error in registring 
++        {
++            printk("Bad kprobe registration \n");
++            up(&sem);                                         //RELEASE LOCK
++            return -EINVAL;
++        }
++        head->dumpid = value;                                                   //dumpid
++        head->next = NULL;
++        up(&sem);                                          //RELEASE LOCK         
++        printk("dumpid = %u \n",head->dumpid);
++        printk("==> Leaving insdump \n");
++        return value;                                                    //return the dumpid created for user
++    }
++    else                                                                        //head is populated then we need to traverse the list till an empty node is found                
++    {   
++        up(&sem);                                                   //ACQUIRE LOCK
++        value++;
++        printk("Adding node \n");
++        while(traverse->next != NULL)                                           //traverse the list till an empty location is found
++        {
++            traverse = traverse->next;
++            value++;
++        }
++        printk("Found an address to add a node \n");
++        
++        traverse->next = temp;                                                 //do the same process of registrating various values as done above     
++        traverse->next->dump_mode = mode;
++        if(mode == 0 || mode == 1)
++        {
++            if(task_ptr->parent != NULL)
++            {
++                traverse->next->parent_id = task_ptr->parent->pid;
++            }
++            printk("mode = 0/1 \n");
++        }
++        traverse->next->process_id = task_ptr->pid;
++        traverse->next->probe = kzalloc(sizeof(struct kprobe), GFP_KERNEL);
++        traverse->next->probe->pre_handler = probe_handler_pre;
++        traverse->next->probe->post_handler = probe_handler_post;
++        traverse->next->probe->fault_handler = probe_handler_fault;
++        //traverse->next->probe->symbol_name = addr;
++        traverse->next->probe->addr = (kprobe_opcode_t *)kallsyms_lookup_name(addr);
++        ret = register_kprobe(traverse->next->probe);
++        if(ret)
++        {
++            up(&sem);                                         //RELEASE LOCK
++            return -EINVAL;
++        }
++        traverse->next->dumpid = value;
++        traverse->next->next = NULL;
++        up(&sem);                                          //RELEASE LOCK
++        printk("dumpid = %u \n",traverse->next->dumpid);
++        printk("==> Leaving insdump \n");
++        return value;
++    }
++
++}
++
++SYSCALL_DEFINE1(rmdump, unsigned int, dumpid)                       //system call  rmdump
++{
++    #ifndef CONFIG_DYNAMIC_DUMP_STACK
++        return -EINVAL;
++    #endif
++
++    printk("entered rmdump \n");                                    //check if the head of the link list is null or not, if it is null then there's no kprobe to remove
++    if(head != NULL)
++    {
++        struct node_list *temp = head;                              //for traversing the list            
++        struct node_list *temporary = temp->next->next; 
++        down(&sem); // 
++        if(dumpid == temp->dumpid)                                  //check the dumpid in the head 
++        {   
++            if(head->next != NULL)
++            {
++                head = head->next;
++            }
++            else
++            {
++                head = NULL;
++                printk("head set to NULL \n");
++            }                                    //if it's present in head, then we need to remove this node and link the head to the next node
++            printk("head removed \n");
++            printk("dumpid removed  = %u \n",temp->dumpid);
++            unregister_kprobe(temp->probe);
++            kfree(temp);
++            up(&sem);
++            return 1;     
++        } 
++        else 
++        {
++            while(dumpid != temp->next->dumpid)   //since it is not present in the head then check all the remaining nodes to see if there is same dumpid as provided by user
++            {
++                if(temp->next != NULL)            //if we've reached the end of the list and still there's no sign of dumpid then we have to return -EINVAL to the user
++                {
++                    up(&sem); 
++                    return -EINVAL;
++                }
++                temp = temp->next;                
++            }
++            //struct node_list *temporary = temp->next->next;                 //for linking this node with next node when we remove this node
++            printk("dumpid removed  = %u \n",temp->next->dumpid);
++            unregister_kprobe(temp->next->probe);
++            kfree(temp->next);
++            temp->next = temporary;
++            up(&sem);
++            return 1;
++        }
++        up(&sem);
++    }
++    else
++    {
++        printk("=====> No Kprobe to remove <===== \n");
++    }
++    printk("leaving rmpdump \n");
++    return 0;
++}
++
++void remove_probes(int rm_pid)           //remove probe function used when process gets that calls insdump gets killed before calling rmdump [called in do_exit (exit.c)]
++{
++    
++    #ifndef CONFIG_DYNAMIC_DUMP_STACK
++        return;
++    #endif
++
++    if(head == NULL)
++    {
++        return;
++    }
++    if(flag == 0)
++    {
++        return;
++    }
++    down(&sem);    //  
++    struct node_list *temp = head;       //we are doing the same thing here as done in rmdump, but instead of searching the kprobe ptr with respect to dumpid, we'll be doing the same with the help of the process id provided by do_exit function
++    printk("entered remove_probes function \n");
++                                                     //ACQUIRE LOCK
++    while(head->process_id == rm_pid)
++    {
++        printk("process didn't call rmdump, got killed instead :(  \n");
++        printk("dumpid removed = %u \n",head->dumpid);
++        if(head->next != NULL)
++        {
++            head = head->next;
++        }
++        else
++        {
++            head = NULL;
++            printk("head made NULL \n");
++            up(&sem);
++            return;
++        }
++        unregister_kprobe(temp->probe);
++        kfree(temp);
++        up(&sem);                                                   //RELEASE LOCK
++    }
++    
++    temp = head;
++    while(temp->next != NULL)
++    {
++        if(temp->next->process_id == rm_pid)
++        {   
++            //struct node_list *temporary = temp->next->next;
++            printk("dumpid removed = %u \n",temp->next->dumpid);
++            printk("process failed to call rmdump, got killed instead :(  \n");
++            unregister_kprobe(temp->next->probe);
++            kfree(temp->next);
++            if(temp->next->next == NULL)
++            {
++                up(&sem);
++                return;
++            }
++            temp->next = temp->next->next;
++        }     
++        else
++        {
++            temp = temp->next;
++        }
++        if(temp->next == NULL)
++        {
++            up(&sem);
++            return;
++        }
++   
++    }
++    up(&sem);
++    return;        
++}
++
++static int __init lock_initialize(void)
++{
++    #ifndef CONFIG_DYNAMIC_DUMP_STACK
++        return -EINVAL;
++    #endif   
++    
++    sema_init(&sem,1);
++    head = NULL;
++    flag = 1;
++	return 0;
++}
++
++late_initcall(lock_initialize);
++
++
++EXPORT_SYMBOL(remove_probes);
+diff -uNr kernel.old/lib/Kconfig.debug kernel.new/lib/Kconfig.debug
+--- kernel.old/lib/Kconfig.debug	2017-06-17 10:44:58.000000000 -0700
++++ kernel.new/lib/Kconfig.debug	2020-04-27 17:51:31.495122000 -0700
+@@ -183,6 +183,12 @@
+ 	  suppress the "warning: ignoring return value of 'foo', declared with
+ 	  attribute warn_unused_result" messages.
+ 
++config DYNAMIC_DUMP_STACK 
++	bool "Enable Dyanmic Dump Stack"
++	default y
++	help
++	Use this configuration to enable dynamic dump stack
++
+ config FRAME_WARN
+ 	int "Warn for stack frames larger than (needs gcc 4.4)"
+ 	range 0 8192
+diff -uNr kernel.old/lib/Makefile kernel.new/lib/Makefile
+--- kernel.old/lib/Makefile	2017-06-17 10:44:58.000000000 -0700
++++ kernel.new/lib/Makefile	2020-05-01 23:32:11.208725000 -0700
+@@ -85,6 +85,7 @@
+ obj-$(CONFIG_LZ4_DECOMPRESS) += lz4/
+ obj-$(CONFIG_XZ_DEC) += xz/
+ obj-$(CONFIG_RAID6_PQ) += raid6/
++obj-y += dynamic_dump_stack.o
+ 
+ lib-$(CONFIG_DECOMPRESS_GZIP) += decompress_inflate.o
+ lib-$(CONFIG_DECOMPRESS_BZIP2) += decompress_bunzip2.o
