@@ -152,6 +152,7 @@ int HC_init(struct P_chip* p)   //registers class,create devices and attributes
 	    }
 
 	}
+	
 	p->HC_dev = device_create(HCSR_class,NULL,dev_HC, NULL, p->name);				//create a device
 	dev_HC++;
 	retval = device_create_file(p->HC_dev, &dev_attr_trigger);

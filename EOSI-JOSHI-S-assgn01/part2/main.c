@@ -182,7 +182,6 @@ void* krpobe_callback(void* arg)
 	if(fd < 0) {
 		printf("issue in open krpobe");
 	}
-	// need to implement the write and read logic for the kprobe thread
 
 	return NULL;
 }
