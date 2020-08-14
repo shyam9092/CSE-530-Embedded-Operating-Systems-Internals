@@ -38,6 +38,13 @@ struct fifo_buff
     int counter;
 }*buff[30];
 
+struct P_chip {
+	char *name;
+	int	dev_no;
+	struct platform_device plf_dev;
+    struct device *HC_dev;
+};
+
 struct hc_sr04driver
 {
     int trigger_ongoing_flag;
@@ -48,7 +55,6 @@ struct hc_sr04driver
     int delta;
     int counter_irq;
     unsigned long long time_rise[30];
-    unsigned long long time_fall[30];
     struct miscdevice *misc_device;
     char misc_device_name[30];
     struct fifo_buff *buff_fifo;
@@ -56,11 +62,7 @@ struct hc_sr04driver
     struct task_struct *worker_thread;
     int gpio_pins_free[30];
     int counter_gpio_pins_free;
+	struct P_chip P_chip;
 }*hc_driver[30];
 
 
-struct HCSR_devices {
-	char *name;
-	int	dev_no;
-	struct platform_device plf_dev;
-};

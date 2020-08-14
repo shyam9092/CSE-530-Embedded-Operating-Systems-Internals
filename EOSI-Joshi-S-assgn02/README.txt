@@ -298,4 +298,5 @@ root@quark:/sys/class/HCSR/HCSR_1# ls
 distance         enable           power            subsystem        uevent
 echo             number_samples   sampling_period  trigger
 
-
+$ chmod +x syfs.sh
+$ ./syfs.sh
