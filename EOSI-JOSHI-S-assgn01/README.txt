@@ -91,11 +91,37 @@ This is a sample output log
 
 steps to run part2 modules
 --------------------------
-rbprobe.c: linux driver file
-main.c:    test code to test the probe driver
-Makefile:  Makefile to compile the probe driver and test code
+rbprobe.c:      linux driver file for kprobe
+rbtraverse.c:   linux driver file to populate rbtree 
+main.c:         test code to test the probe driver
+Makefile:       Makefile to compile the probe driver and test code
 
-My part2 driver file has some functions to be completed as per asked by the assignment. 
+Follow steps to compile
+=> Go to directory "part2" and run the make command like below
+
+$ make
+
+=> this will create a kernel loadable modules and test binary like below,
+
+$ ls
+main.c  Makefile  modules.order  Module.symvers  rbtraverse.c rbporbe.c  rbtraverse.ko  rbtraverse.mod.c  rbtraverse.mod.o  rbtraverse.o rbprobe.ko  rbprobe.mod.c  rbprobe.mod.o  rbprobe.o  rbtraverse_tester
+
+=> Connect intel galileo board to your host machine using FTDI and ethernet cable
+
+=> Open terminal for intel galileo board and enter into root of intel galileo board
+
+=> Copy the above mentioned files created by Makefile to intel galileo board
+
+=> Run the following command to install module into kernel
+
+$ insmod rbtraverse.ko
+
+$ insmode rbprobe.ko
+
+=> Run the following command to test the module 
+
+$ ./rbtraverse_tester
+
 
 
 
